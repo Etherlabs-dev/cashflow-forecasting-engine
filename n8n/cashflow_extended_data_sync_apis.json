@@ -1,1 +1,735 @@
+{
+  "name": "Cash Flow - Data Sync External APIs",
+  "nodes": [
+    {
+      "parameters": {
+        "mode": "everyDay",
+        "hour": 6,
+        "minute": 0
+      },
+      "id": "cron_sync",
+      "name": "Daily Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        200,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.stripe.com/v1/charges",
+        "method": "GET",
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.STRIPE_SECRET_KEY }}"
+            }
+          ]
+        },
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "limit",
+              "value": "100"
+            }
+          ]
+        }
+      },
+      "id": "stripe_list_charges",
+      "name": "Stripe - List Charges",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        200,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "language": "python",
+        "pythonCode": "import datetime\ncharges_data = _input.item()['json']\ncharges = charges_data.get('data', [])\nout = []\nfor charge in charges:\n    created_at = charge.get('created')\n    if created_at is None:\n        continue\n    date_str = datetime.datetime.utcfromtimestamp(int(created_at)).date().isoformat()\n    amount = charge.get('amount', 0) / 100.0\n    currency = (charge.get('currency') or 'usd').upper()\n    description = charge.get('description') or ''\n    out.append({\n        'company_id': '11111111-1111-1111-1111-111111111111',\n        'bank_account_id': '55555555-5555-5555-5555-555555555555',\n        'data_source_id': '22222222-2222-2222-2222-222222222222',\n        'external_id': charge.get('id'),\n        'transaction_date': date_str,\n        'amount': amount,\n        'currency': currency,\n        'description': description,\n        'category': 'stripe_charge',\n        'metadata': charge\n    })\nreturn [{'json': item} for item in out]"
+      },
+      "id": "stripe_transform",
+      "name": "Transform Stripe Charges",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "create",
+        "tableId": "bank_transactions",
+        "useCustomSchema": false,
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "company_id",
+              "fieldValue": "={{ $json.company_id }}"
+            },
+            {
+              "fieldId": "bank_account_id",
+              "fieldValue": "={{ $json.bank_account_id }}"
+            },
+            {
+              "fieldId": "data_source_id",
+              "fieldValue": "={{ $json.data_source_id }}"
+            },
+            {
+              "fieldId": "external_id",
+              "fieldValue": "={{ $json.external_id }}"
+            },
+            {
+              "fieldId": "transaction_date",
+              "fieldValue": "={{ $json.transaction_date }}"
+            },
+            {
+              "fieldId": "amount",
+              "fieldValue": "={{ $json.amount }}"
+            },
+            {
+              "fieldId": "currency",
+              "fieldValue": "={{ $json.currency }}"
+            },
+            {
+              "fieldId": "description",
+              "fieldValue": "={{ $json.description }}"
+            },
+            {
+              "fieldId": "category",
+              "fieldValue": "={{ $json.category }}"
+            },
+            {
+              "fieldId": "metadata",
+              "fieldValue": "={{ $json.metadata }}"
+            }
+          ]
+        }
+      },
+      "id": "stripe_insert_bank_transactions",
+      "name": "Insert Stripe Transactions",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        200,
+        550
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://quickbooks.api.intuit.com/v3/company/{{ $env.QBO_REALM_ID }}/query",
+        "method": "GET",
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "query",
+              "value": "select * from Invoice startposition 1 maxresults 1000"
+            }
+          ]
+        },
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "Content-Type",
+              "value": "application/text"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.QBO_ACCESS_TOKEN }}"
+            }
+          ]
+        }
+      },
+      "id": "qb_fetch_invoices",
+      "name": "QuickBooks - Fetch Invoices",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        400,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "language": "python",
+        "pythonCode": "import json\nresponse = _input.item()['json']\nquery_resp = response.get('QueryResponse', {})\ninvoices = query_resp.get('Invoice', []) or []\nout = []\nfor inv in invoices:\n    balance = float(inv.get('Balance', 0) or 0)\n    status = 'open' if balance > 0 else 'paid'\n    out.append({\n        'company_id': '11111111-1111-1111-1111-111111111111',\n        'data_source_id': '33333333-3333-3333-3333-333333333333',\n        'external_id': inv.get('Id'),\n        'customer_id': (inv.get('CustomerRef') or {}).get('value'),\n        'customer_name': (inv.get('CustomerRef') or {}).get('name'),\n        'issue_date': inv.get('TxnDate'),\n        'due_date': inv.get('DueDate'),\n        'amount': float(inv.get('TotalAmt', 0) or 0),\n        'currency': (inv.get('CurrencyRef') or {}).get('value', 'USD'),\n        'status': status,\n        'paid_date': None,\n        'description': inv.get('PrivateNote') or '',\n        'metadata': inv\n    })\nreturn [{'json': item} for item in out]"
+      },
+      "id": "qb_transform_invoices",
+      "name": "Transform QuickBooks Invoices",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "create",
+        "tableId": "invoices_ar",
+        "useCustomSchema": false,
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "company_id",
+              "fieldValue": "={{ $json.company_id }}"
+            },
+            {
+              "fieldId": "data_source_id",
+              "fieldValue": "={{ $json.data_source_id }}"
+            },
+            {
+              "fieldId": "external_id",
+              "fieldValue": "={{ $json.external_id }}"
+            },
+            {
+              "fieldId": "customer_id",
+              "fieldValue": "={{ $json.customer_id }}"
+            },
+            {
+              "fieldId": "customer_name",
+              "fieldValue": "={{ $json.customer_name }}"
+            },
+            {
+              "fieldId": "issue_date",
+              "fieldValue": "={{ $json.issue_date }}"
+            },
+            {
+              "fieldId": "due_date",
+              "fieldValue": "={{ $json.due_date }}"
+            },
+            {
+              "fieldId": "amount",
+              "fieldValue": "={{ $json.amount }}"
+            },
+            {
+              "fieldId": "currency",
+              "fieldValue": "={{ $json.currency }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "={{ $json.status }}"
+            },
+            {
+              "fieldId": "paid_date",
+              "fieldValue": "={{ $json.paid_date }}"
+            },
+            {
+              "fieldId": "description",
+              "fieldValue": "={{ $json.description }}"
+            },
+            {
+              "fieldId": "metadata",
+              "fieldValue": "={{ $json.metadata }}"
+            }
+          ]
+        }
+      },
+      "id": "qb_insert_invoices",
+      "name": "Insert QuickBooks Invoices",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        400,
+        550
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://quickbooks.api.intuit.com/v3/company/{{ $env.QBO_REALM_ID }}/query",
+        "method": "GET",
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "query",
+              "value": "select * from Bill startposition 1 maxresults 1000"
+            }
+          ]
+        },
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "Content-Type",
+              "value": "application/text"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.QBO_ACCESS_TOKEN }}"
+            }
+          ]
+        }
+      },
+      "id": "qb_fetch_bills",
+      "name": "QuickBooks - Fetch Bills",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        600,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "language": "python",
+        "pythonCode": "response = _input.item()['json']\nquery_resp = response.get('QueryResponse', {})\nbills = query_resp.get('Bill', []) or []\nout = []\nfor bill in bills:\n    balance = float(bill.get('Balance', 0) or 0)\n    status = 'open' if balance > 0 else 'paid'\n    out.append({\n        'company_id': '11111111-1111-1111-1111-111111111111',\n        'data_source_id': '33333333-3333-3333-3333-333333333333',\n        'external_id': bill.get('Id'),\n        'vendor_id': (bill.get('VendorRef') or {}).get('value'),\n        'vendor_name': (bill.get('VendorRef') or {}).get('name'),\n        'issue_date': bill.get('TxnDate'),\n        'due_date': bill.get('DueDate'),\n        'amount': float(bill.get('TotalAmt', 0) or 0),\n        'currency': (bill.get('CurrencyRef') or {}).get('value', 'USD'),\n        'status': status,\n        'paid_date': None,\n        'description': bill.get('PrivateNote') or '',\n        'metadata': bill\n    })\nreturn [{'json': item} for item in out]"
+      },
+      "id": "qb_transform_bills",
+      "name": "Transform QuickBooks Bills",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "create",
+        "tableId": "bills_ap",
+        "useCustomSchema": false,
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "company_id",
+              "fieldValue": "={{ $json.company_id }}"
+            },
+            {
+              "fieldId": "data_source_id",
+              "fieldValue": "={{ $json.data_source_id }}"
+            },
+            {
+              "fieldId": "external_id",
+              "fieldValue": "={{ $json.external_id }}"
+            },
+            {
+              "fieldId": "vendor_id",
+              "fieldValue": "={{ $json.vendor_id }}"
+            },
+            {
+              "fieldId": "vendor_name",
+              "fieldValue": "={{ $json.vendor_name }}"
+            },
+            {
+              "fieldId": "issue_date",
+              "fieldValue": "={{ $json.issue_date }}"
+            },
+            {
+              "fieldId": "due_date",
+              "fieldValue": "={{ $json.due_date }}"
+            },
+            {
+              "fieldId": "amount",
+              "fieldValue": "={{ $json.amount }}"
+            },
+            {
+              "fieldId": "currency",
+              "fieldValue": "={{ $json.currency }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "={{ $json.status }}"
+            },
+            {
+              "fieldId": "paid_date",
+              "fieldValue": "={{ $json.paid_date }}"
+            },
+            {
+              "fieldId": "description",
+              "fieldValue": "={{ $json.description }}"
+            },
+            {
+              "fieldId": "metadata",
+              "fieldValue": "={{ $json.metadata }}"
+            }
+          ]
+        }
+      },
+      "id": "qb_insert_bills",
+      "name": "Insert QuickBooks Bills",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        600,
+        550
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.gusto-demo.com/v1/companies/{{ $env.GUSTO_COMPANY_ID }}/payrolls",
+        "method": "GET",
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.GUSTO_API_TOKEN }}"
+            }
+          ]
+        },
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "start_date",
+              "value": "{{ $env.GUSTO_START_DATE }}"
+            },
+            {
+              "name": "end_date",
+              "value": "{{ $env.GUSTO_END_DATE }}"
+            }
+          ]
+        }
+      },
+      "id": "gusto_fetch_payrolls",
+      "name": "Gusto - Fetch Payrolls",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        800,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "language": "python",
+        "pythonCode": "response = _input.item()['json']\npayrolls = response.get('payrolls') or response.get('data') or []\nout = []\nfor pr in payrolls:\n    out.append({\n        'company_id': '11111111-1111-1111-1111-111111111111',\n        'data_source_id': '33333333-3333-3333-3333-333333333333',\n        'external_id': pr.get('id'),\n        'pay_period_start': pr.get('pay_period_start_date'),\n        'pay_period_end': pr.get('pay_period_end_date'),\n        'pay_date': pr.get('check_date') or pr.get('pay_date'),\n        'gross_amount': float(pr.get('gross_pay', 0) or 0),\n        'net_amount': float(pr.get('net_pay', 0) or 0),\n        'currency': pr.get('currency', 'USD'),\n        'employees_count': pr.get('employees_count') or pr.get('employee_count'),\n        'description': pr.get('notes') or '',\n        'metadata': pr\n    })\nreturn [{'json': item} for item in out]"
+      },
+      "id": "gusto_transform_payrolls",
+      "name": "Transform Gusto Payrolls",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "create",
+        "tableId": "payroll_runs",
+        "useCustomSchema": false,
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "company_id",
+              "fieldValue": "={{ $json.company_id }}"
+            },
+            {
+              "fieldId": "data_source_id",
+              "fieldValue": "={{ $json.data_source_id }}"
+            },
+            {
+              "fieldId": "external_id",
+              "fieldValue": "={{ $json.external_id }}"
+            },
+            {
+              "fieldId": "pay_period_start",
+              "fieldValue": "={{ $json.pay_period_start }}"
+            },
+            {
+              "fieldId": "pay_period_end",
+              "fieldValue": "={{ $json.pay_period_end }}"
+            },
+            {
+              "fieldId": "pay_date",
+              "fieldValue": "={{ $json.pay_date }}"
+            },
+            {
+              "fieldId": "gross_amount",
+              "fieldValue": "={{ $json.gross_amount }}"
+            },
+            {
+              "fieldId": "net_amount",
+              "fieldValue": "={{ $json.net_amount }}"
+            },
+            {
+              "fieldId": "currency",
+              "fieldValue": "={{ $json.currency }}"
+            },
+            {
+              "fieldId": "employees_count",
+              "fieldValue": "={{ $json.employees_count }}"
+            },
+            {
+              "fieldId": "description",
+              "fieldValue": "={{ $json.description }}"
+            },
+            {
+              "fieldId": "metadata",
+              "fieldValue": "={{ $json.metadata }}"
+            }
+          ]
+        }
+      },
+      "id": "gusto_insert_payrolls",
+      "name": "Insert Gusto Payrolls",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        800,
+        550
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://sandbox.plaid.com/transactions/get",
+        "method": "POST",
+        "jsonParameters": true,
+        "options": {},
+        "body": {
+          "client_id": "{{ $env.PLAID_CLIENT_ID }}",
+          "secret": "{{ $env.PLAID_SECRET }}",
+          "access_token": "{{ $env.PLAID_ACCESS_TOKEN }}",
+          "start_date": "{{ $env.PLAID_START_DATE }}",
+          "end_date": "{{ $env.PLAID_END_DATE }}",
+          "options": {
+            "count": 250,
+            "offset": 0
+          }
+        }
+      },
+      "id": "plaid_fetch_transactions",
+      "name": "Plaid - Fetch Transactions",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "language": "python",
+        "pythonCode": "response = _input.item()['json']\ntransactions = response.get('transactions', []) or []\nout = []\nfor tx in transactions:\n    amount = float(tx.get('amount', 0) or 0)\n    tran_type = tx.get('transaction_type') or ''\n    if tran_type.lower() == 'place' or amount > 0:\n        signed_amount = -abs(amount)\n    else:\n        signed_amount = abs(amount)\n    out.append({\n        'company_id': '11111111-1111-1111-1111-111111111111',\n        'bank_account_id': '55555555-5555-5555-5555-555555555555',\n        'data_source_id': '44444444-4444-4444-4444-444444444444',\n        'external_id': tx.get('transaction_id'),\n        'transaction_date': tx.get('date'),\n        'amount': signed_amount,\n        'currency': tx.get('iso_currency_code') or tx.get('unofficial_currency_code') or 'USD',\n        'description': tx.get('name') or '',\n        'category': 'plaid_transaction',\n        'metadata': tx\n    })\nreturn [{'json': item} for item in out]"
+      },
+      "id": "plaid_transform_transactions",
+      "name": "Transform Plaid Transactions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "create",
+        "tableId": "bank_transactions",
+        "useCustomSchema": false,
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "company_id",
+              "fieldValue": "={{ $json.company_id }}"
+            },
+            {
+              "fieldId": "bank_account_id",
+              "fieldValue": "={{ $json.bank_account_id }}"
+            },
+            {
+              "fieldId": "data_source_id",
+              "fieldValue": "={{ $json.data_source_id }}"
+            },
+            {
+              "fieldId": "external_id",
+              "fieldValue": "={{ $json.external_id }}"
+            },
+            {
+              "fieldId": "transaction_date",
+              "fieldValue": "={{ $json.transaction_date }}"
+            },
+            {
+              "fieldId": "amount",
+              "fieldValue": "={{ $json.amount }}"
+            },
+            {
+              "fieldId": "currency",
+              "fieldValue": "={{ $json.currency }}"
+            },
+            {
+              "fieldId": "description",
+              "fieldValue": "={{ $json.description }}"
+            },
+            {
+              "fieldId": "category",
+              "fieldValue": "={{ $json.category }}"
+            },
+            {
+              "fieldId": "metadata",
+              "fieldValue": "={{ $json.metadata }}"
+            }
+          ]
+        }
+      },
+      "id": "plaid_insert_transactions",
+      "name": "Insert Plaid Transactions",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1000,
+        550
+      ]
+    }
+  ],
+  "connections": {
+    "Daily Trigger": {
+      "main": [
+        [
+          {
+            "node": "Stripe - List Charges",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "QuickBooks - Fetch Invoices",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "QuickBooks - Fetch Bills",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Gusto - Fetch Payrolls",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Plaid - Fetch Transactions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stripe - List Charges": {
+      "main": [
+        [
+          {
+            "node": "Transform Stripe Charges",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform Stripe Charges": {
+      "main": [
+        [
+          {
+            "node": "Insert Stripe Transactions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QuickBooks - Fetch Invoices": {
+      "main": [
+        [
+          {
+            "node": "Transform QuickBooks Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform QuickBooks Invoices": {
+      "main": [
+        [
+          {
+            "node": "Insert QuickBooks Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QuickBooks - Fetch Bills": {
+      "main": [
+        [
+          {
+            "node": "Transform QuickBooks Bills",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform QuickBooks Bills": {
+      "main": [
+        [
+          {
+            "node": "Insert QuickBooks Bills",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gusto - Fetch Payrolls": {
+      "main": [
+        [
+          {
+            "node": "Transform Gusto Payrolls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform Gusto Payrolls": {
+      "main": [
+        [
+          {
+            "node": "Insert Gusto Payrolls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plaid - Fetch Transactions": {
+      "main": [
+        [
+          {
+            "node": "Transform Plaid Transactions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform Plaid Transactions": {
+      "main": [
+        [
+          {
+            "node": "Insert Plaid Transactions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "pinData": {}
+}
 
