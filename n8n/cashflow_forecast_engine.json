@@ -1,1 +1,395 @@
+{
+  "name": "Cash Flow - Forecast Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "mode": "everyDay",
+        "hour": 3,
+        "minute": 0
+      },
+      "id": "cron-forecast",
+      "name": "Daily Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        200,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "getAll",
+        "tableId": "daily_actuals",
+        "useCustomSchema": false,
+        "returnAll": true,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "company_id",
+              "keyValue": "=11111111-1111-1111-1111-111111111111"
+            }
+          ]
+        }
+      },
+      "id": "get-daily",
+      "name": "Get Daily Actuals",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        200,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "dataset",
+              "value": "daily_actuals"
+            }
+          ]
+        },
+        "keepOnlySet": false
+      },
+      "id": "label-daily",
+      "name": "Label Daily Actuals",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        200,
+        550
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "getAll",
+        "tableId": "cashflow_parameters",
+        "useCustomSchema": false,
+        "returnAll": true,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "company_id",
+              "keyValue": "=11111111-1111-1111-1111-111111111111"
+            }
+          ]
+        }
+      },
+      "id": "get-params",
+      "name": "Get Parameters",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        400,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "dataset",
+              "value": "cashflow_parameters"
+            }
+          ]
+        },
+        "keepOnlySet": false
+      },
+      "id": "label-params",
+      "name": "Label Parameters",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        400,
+        550
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "merge-data",
+      "name": "Merge Datasets",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [
+        300,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "language": "python",
+        "pythonCode": "import uuid\nfrom datetime import datetime, timedelta\nfrom collections import defaultdict\n\n# Gather all input items\nitems = _input.all()\n\n# Separate datasets\ndaily_actuals = []\nparams_list = []\ncompany_id = None\n\nfor item in items:\n    data = item['json']\n    dataset = data.get('dataset')\n    if dataset == 'daily_actuals':\n        daily_actuals.append(data)\n        company_id = data.get('company_id') or company_id\n    elif dataset == 'cashflow_parameters':\n        params_list.append(data)\n        if not company_id:\n            company_id = data.get('company_id')\n\n# Sort daily actuals by date\ntry:\n    daily_sorted = sorted(daily_actuals, key=lambda x: x.get('date') or '')\nexcept Exception:\n    daily_sorted = daily_actuals\n\nif daily_sorted:\n    last_row = daily_sorted[-1]\n    current_balance = float(last_row.get('closing_balance', 0) or 0)\n    last_date_str = last_row.get('date')\n    try:\n        last_date = datetime.fromisoformat(str(last_date_str)).date()\n    except Exception:\n        last_date = datetime.strptime(str(last_date_str), '%Y-%m-%d').date()\nelse:\n    current_balance = 0.0\n    last_date = datetime.utcnow().date()\n\n# Average cash_in and cash_out over last 30 days\nrecent = daily_sorted[-30:] if len(daily_sorted) >= 30 else daily_sorted\nif recent:\n    avg_cash_in = sum(float(row.get('cash_in', 0) or 0) for row in recent) / len(recent)\n    avg_cash_out = sum(float(row.get('cash_out', 0) or 0) for row in recent) / len(recent)\nelse:\n    avg_cash_in = 0.0\n    avg_cash_out = 0.0\n\n# Get latest parameters\nif params_list:\n    latest_param = params_list[-1]\n    base_growth_rate = float(latest_param.get('base_growth_rate') or 0)\n    parameters_id = latest_param.get('id')\nelse:\n    base_growth_rate = 0.0\n    parameters_id = None\n\n# Prepare run metadata\nrun_id = str(uuid.uuid4())\nrun_at = datetime.utcnow().isoformat()\nassumptions = {\n    'base_growth_rate': base_growth_rate\n}\n\nstart_date = last_date + timedelta(days=1)\nclosing_balance_base = current_balance\nclosing_balance_best = current_balance\nclosing_balance_worst = current_balance\nforecast_rows = []\n\nfor day_idx in range(1, 91):\n    forecast_date = start_date + timedelta(days=day_idx - 1)\n    growth_multiplier = (1 + base_growth_rate) ** (day_idx / 30.0)\n    base_inflows = avg_cash_in * growth_multiplier\n    base_outflows = avg_cash_out * growth_multiplier\n    base_net = base_inflows - base_outflows\n    closing_balance_base += base_net\n\n    best_inflows = base_inflows * 1.2\n    best_outflows = base_outflows * 0.9\n    best_net = best_inflows - best_outflows\n    closing_balance_best += best_net\n\n    worst_inflows = base_inflows * 0.8\n    worst_outflows = base_outflows * 1.1\n    worst_net = worst_inflows - worst_outflows\n    closing_balance_worst += worst_net\n\n    row = {\n        'dataset': 'forecast_row',\n        'run_id': run_id,\n        'company_id': company_id,\n        'date': forecast_date.isoformat(),\n        'base_inflows': base_inflows,\n        'base_outflows': base_outflows,\n        'base_net_cash': base_net,\n        'base_closing_balance': closing_balance_base,\n        'best_inflows': best_inflows,\n        'best_outflows': best_outflows,\n        'best_net_cash': best_net,\n        'best_closing_balance': closing_balance_best,\n        'worst_inflows': worst_inflows,\n        'worst_outflows': worst_outflows,\n        'worst_net_cash': worst_net,\n        'worst_closing_balance': closing_balance_worst,\n        'metadata': {}\n    }\n    forecast_rows.append({'json': row})\n\nrun_data = {\n    'dataset': 'forecast_run',\n    'id': run_id,\n    'company_id': company_id,\n    'parameters_id': parameters_id,\n    'run_label': 'daily_auto',\n    'run_at': run_at,\n    'assumptions': assumptions\n}\n\noutput = []\noutput.append({'json': run_data})\noutput.extend(forecast_rows)\n\nreturn output\n"
+      },
+      "id": "calc-forecast",
+      "name": "Calculate Forecast",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        1000
+      ]
+    },
+    {
+      "parameters": {
+        "value": "={{ $json.dataset }}",
+        "rules": [
+          {
+            "operation": "equal",
+            "value1": "forecast_run"
+          },
+          {
+            "operation": "equal",
+            "value1": "forecast_row"
+          }
+        ]
+      },
+      "id": "switch-forecast",
+      "name": "Switch Forecast Data",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [
+        300,
+        1150
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "create",
+        "tableId": "forecast_runs",
+        "useCustomSchema": false,
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "id",
+              "fieldValue": "={{ $json.id }}"
+            },
+            {
+              "fieldId": "company_id",
+              "fieldValue": "={{ $json.company_id }}"
+            },
+            {
+              "fieldId": "parameters_id",
+              "fieldValue": "={{ $json.parameters_id }}"
+            },
+            {
+              "fieldId": "run_label",
+              "fieldValue": "={{ $json.run_label }}"
+            },
+            {
+              "fieldId": "run_at",
+              "fieldValue": "={{ $json.run_at }}"
+            },
+            {
+              "fieldId": "assumptions",
+              "fieldValue": "={{ $json.assumptions }}"
+            }
+          ]
+        }
+      },
+      "id": "insert-run",
+      "name": "Insert Forecast Run",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        200,
+        1400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "create",
+        "tableId": "daily_forecasts",
+        "useCustomSchema": false,
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "run_id",
+              "fieldValue": "={{ $json.run_id }}"
+            },
+            {
+              "fieldId": "company_id",
+              "fieldValue": "={{ $json.company_id }}"
+            },
+            {
+              "fieldId": "date",
+              "fieldValue": "={{ $json.date }}"
+            },
+            {
+              "fieldId": "base_inflows",
+              "fieldValue": "={{ $json.base_inflows }}"
+            },
+            {
+              "fieldId": "base_outflows",
+              "fieldValue": "={{ $json.base_outflows }}"
+            },
+            {
+              "fieldId": "base_net_cash",
+              "fieldValue": "={{ $json.base_net_cash }}"
+            },
+            {
+              "fieldId": "base_closing_balance",
+              "fieldValue": "={{ $json.base_closing_balance }}"
+            },
+            {
+              "fieldId": "best_inflows",
+              "fieldValue": "={{ $json.best_inflows }}"
+            },
+            {
+              "fieldId": "best_outflows",
+              "fieldValue": "={{ $json.best_outflows }}"
+            },
+            {
+              "fieldId": "best_net_cash",
+              "fieldValue": "={{ $json.best_net_cash }}"
+            },
+            {
+              "fieldId": "best_closing_balance",
+              "fieldValue": "={{ $json.best_closing_balance }}"
+            },
+            {
+              "fieldId": "worst_inflows",
+              "fieldValue": "={{ $json.worst_inflows }}"
+            },
+            {
+              "fieldId": "worst_outflows",
+              "fieldValue": "={{ $json.worst_outflows }}"
+            },
+            {
+              "fieldId": "worst_net_cash",
+              "fieldValue": "={{ $json.worst_net_cash }}"
+            },
+            {
+              "fieldId": "worst_closing_balance",
+              "fieldValue": "={{ $json.worst_closing_balance }}"
+            },
+            {
+              "fieldId": "metadata",
+              "fieldValue": "={{ $json.metadata }}"
+            }
+          ]
+        }
+      },
+      "id": "insert-daily",
+      "name": "Insert Daily Forecasts",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        450,
+        1400
+      ]
+    }
+  ],
+  "connections": {
+    "Daily Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Daily Actuals",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Daily Actuals": {
+      "main": [
+        [
+          {
+            "node": "Label Daily Actuals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Label Daily Actuals": {
+      "main": [
+        [
+          {
+            "node": "Merge Datasets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Parameters": {
+      "main": [
+        [
+          {
+            "node": "Label Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Label Parameters": {
+      "main": [
+        [
+          {
+            "node": "Merge Datasets",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Datasets": {
+      "main": [
+        [
+          {
+            "node": "Calculate Forecast",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Forecast": {
+      "main": [
+        [
+          {
+            "node": "Switch Forecast Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Forecast Data": {
+      "main": [
+        [
+          {
+            "node": "Insert Forecast Run",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Insert Daily Forecasts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "pinData": {}
+}
 
