@@ -1,0 +1,5 @@
+{
+  "name": "CashFlow Intel 90",
+  "description": "A production-grade cash flow intelligence engine using n8n and Supabase. Features forecasting, scenario planning, and working capital analysis.",
+  "requestFramePermissions": []
+}
