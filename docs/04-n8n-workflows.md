@@ -137,3 +137,128 @@ Ingest raw financial data (or sample data) and ensure core tables in Supabase ar
   "growth_adjustment": -0.05,
   "additional_monthly_payroll": 25000
 }
+
+```
+
+### Main Responsibilities:
+
+* Accept scenario configuration (name + parameters).
+* Fetch baseline forecast and/or relevant daily history.
+* Recompute forecasts with scenario adjustments:
+    * Add extra outflows (e.g. payroll)
+    * Adjust inflows for growth changes
+* Insert into:
+    * `scenario_runs` (metadata)
+    * `cash_forecasts` (scenario forecasts)
+    * optionally `scenario_forecast_deltas` (difference vs baseline).
+
+Key Nodes:
+
+* **Webhook** – receives scenario parameters
+* **Supabase select** for:
+    * Latest baseline `forecast_runs`
+    * Associated rows in `cash_forecasts`
+* **Code node** – scenario-adjusted forecast logic
+* **Supabase create** nodes:
+    * `scenario_runs`
+    * `cash_forecasts` / `scenario_forecast_deltas`
+
+Screenshot placeholder:
+
+![Scenario Runner Workflow](../assets/diagrams/n8n-cashflow-scenario-runner.png)
+
+### 5. cashflow_risk_alerts.json
+
+**Path:** `n8n/cashflow_risk_alerts.json`
+
+**Purpose:**
+
+* Detect and log runway risk and trigger alerts.
+
+**Typical Trigger:**
+
+* Cron (e.g. 04:00 daily)
+
+**Main Responsibilities:**
+
+* Read latest baseline (and optionally worst-case) forecast from `cash_forecasts`.
+* Compute:
+    * Date where `base_closing_balance` crosses below threshold (e.g. 0 or 2-month buffer).
+    * Runway in days from current date.
+* If conditions are met:
+    * Insert a row into `alert_events` with:
+        * `alert_type`
+        * `severity`
+        * `message`
+        * `details` (JSON)
+    * Optionally post a Slack/Email alert.
+
+**Key Nodes:**
+
+* **Cron**
+* **Supabase select** from `forecast_runs` and `cash_forecasts`
+* **Code node** computing runway and building alert message
+* **Supabase create** into `alert_events`
+* Optional:
+    * **Slack** node
+    * **Email** node
+
+Screenshot placeholder:
+
+![Risk Alerts Workflow](../assets/diagrams/n8n-cashflow-risk-alerts.png)
+
+### 6. cashflow_extended_data_sync_apis.json
+
+**Path:** `n8n/cashflow_extended_data_sync_apis.json`
+
+**Purpose:**
+
+* Showcase production-style integrations with external APIs for:
+    * Accounting (QuickBooks)
+    * Payments (Stripe)
+    * Payroll (Gusto)
+    * Banking (Plaid)
+
+**Typical Trigger:**
+
+* Cron (e.g. 06:00 daily)
+* or manually when running against sandbox environments.
+
+**Main Responsibilities:**
+
+* For each provider:
+    * **HTTP Request node** → call the relevant API endpoint.
+    * **Code node** → transform provider-specific response.
+    * **Supabase node** → insert into the correct table:
+        * `bank_transactions`
+        * `ar_invoices`
+        * `ap_bills`
+        * `payroll_runs`
+
+**Examples:**
+
+* Stripe → `bank_transactions` (charges → inflows)
+* QuickBooks (Invoices) → `ar_invoices`
+* QuickBooks (Bills) → `ap_bills`
+* Gusto → `payroll_runs`
+* Plaid → `bank_transactions`
+
+This workflow is your reference when showing that you can wire up real APIs into the engine.
+
+Screenshot placeholder:
+
+![Extended Data Sync APIs Workflow](../assets/diagrams/n8n-cashflow-extended-apis.png)
+
+### 7. Tips for Working with Workflows
+
+* Use workflow **tags** in n8n to group all cashflow-related flows.
+* Document credentials in n8n using n8n’s own **Credentials** system, not hard-coded secrets.
+* When changing schemas:
+    1.  Update the SQL first.
+    2.  Then adjust Supabase nodes + Code node mappings.
+
+### 8. Related Docs
+
+* `03-supabase-setup.md` – how the DB is configured.
+* `05-external-apis-and-mapping.md` – detailed provider → table mapping.
+* `06-dashboard-walkthrough.md` – to see how the workflows feed the UI.
