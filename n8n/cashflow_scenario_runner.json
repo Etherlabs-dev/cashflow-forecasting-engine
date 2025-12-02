@@ -1,1 +1,512 @@
+{
+  "name": "Cash Flow - Scenario Runner",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "run-scenario",
+        "httpMethod": "POST"
+      },
+      "id": "webhook-scenario",
+      "name": "Scenario Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        200,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "dataset",
+              "value": "scenario_params"
+            },
+            {
+              "name": "scenario_name",
+              "value": "={{ $json.body.scenario_name }}"
+            },
+            {
+              "name": "growth_adjustment",
+              "value": "={{ $json.body.growth_adjustment }}"
+            },
+            {
+              "name": "additional_payroll",
+              "value": "={{ $json.body.additional_payroll }}"
+            }
+          ]
+        },
+        "keepOnlySet": true
+      },
+      "id": "set-scenario-params",
+      "name": "Set Scenario Params",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        200,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "getAll",
+        "tableId": "daily_actuals",
+        "useCustomSchema": false,
+        "returnAll": true,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "company_id",
+              "keyValue": "=11111111-1111-1111-1111-111111111111"
+            }
+          ]
+        }
+      },
+      "id": "get-daily",
+      "name": "Get Daily Actuals",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        200,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "dataset",
+              "value": "daily_actuals"
+            }
+          ]
+        },
+        "keepOnlySet": false
+      },
+      "id": "label-daily",
+      "name": "Label Daily Actuals",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        200,
+        650
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "getAll",
+        "tableId": "cashflow_parameters",
+        "useCustomSchema": false,
+        "returnAll": true,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "company_id",
+              "keyValue": "=11111111-1111-1111-1111-111111111111"
+            }
+          ]
+        }
+      },
+      "id": "get-params",
+      "name": "Get Parameters",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        400,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "dataset",
+              "value": "cashflow_parameters"
+            }
+          ]
+        },
+        "keepOnlySet": false
+      },
+      "id": "label-params",
+      "name": "Label Parameters",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        400,
+        650
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "merge1",
+      "name": "Merge Scenario & Daily",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [
+        300,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "merge2",
+      "name": "Merge All Data",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [
+        300,
+        950
+      ]
+    },
+    {
+      "parameters": {
+        "language": "python",
+        "pythonCode": "import uuid\nfrom datetime import datetime, timedelta\n\nitems = _input.all()\n# Separate datasets\ndaily_actuals = []\nparams_list = []\nscenario_params = None\ncompany_id = None\nfor item in items:\n    data = item['json']\n    dataset = data.get('dataset')\n    if dataset == 'daily_actuals':\n        daily_actuals.append(data)\n        company_id = data.get('company_id') or company_id\n    elif dataset == 'cashflow_parameters':\n        params_list.append(data)\n        if not company_id:\n            company_id = data.get('company_id')\n    elif dataset == 'scenario_params':\n        scenario_params = data\n\n# Extract scenario parameters\nscenario_name = scenario_params.get('scenario_name')\ngrowth_adjustment = float(scenario_params.get('growth_adjustment') or 0)\nadditional_monthly_payroll = float(scenario_params.get('additional_payroll') or 0)\n\n# Sort daily actuals and compute balances\ntry:\n    daily_sorted = sorted(daily_actuals, key=lambda x: x.get('date') or '')\nexcept Exception:\n    daily_sorted = daily_actuals\nif daily_sorted:\n    last_row = daily_sorted[-1]\n    current_balance = float(last_row.get('closing_balance', 0) or 0)\n    last_date_str = last_row.get('date')\n    try:\n        last_date = datetime.fromisoformat(str(last_date_str)).date()\n    except Exception:\n        last_date = datetime.strptime(str(last_date_str), '%Y-%m-%d').date()\nelse:\n    current_balance = 0.0\n    last_date = datetime.utcnow().date()\nrecent = daily_sorted[-30:] if len(daily_sorted) >= 30 else daily_sorted\nif recent:\n    avg_cash_in = sum(float(row.get('cash_in', 0) or 0) for row in recent) / len(recent)\n    avg_cash_out = sum(float(row.get('cash_out', 0) or 0) for row in recent) / len(recent)\nelse:\n    avg_cash_in = 0.0\n    avg_cash_out = 0.0\n# Latest parameters\nif params_list:\n    latest_param = params_list[-1]\n    base_growth_rate = float(latest_param.get('base_growth_rate') or 0)\n    parameters_id = latest_param.get('id')\nelse:\n    base_growth_rate = 0.0\n    parameters_id = None\nscenario_id = str(uuid.uuid4())\nrun_id = str(uuid.uuid4())\nrun_at = datetime.utcnow().isoformat()\n# Adjust growth and outflow\nadjusted_growth_rate = base_growth_rate + growth_adjustment\ndaily_extra_payroll = additional_monthly_payroll / 30.0 if additional_monthly_payroll else 0.0\nassumptions = {\n    'base_growth_rate': base_growth_rate,\n    'growth_adjustment': growth_adjustment,\n    'adjusted_growth_rate': adjusted_growth_rate,\n    'additional_monthly_payroll': additional_monthly_payroll\n}\nstart_date = last_date + timedelta(days=1)\nclosing_balance_base = current_balance\nclosing_balance_best = current_balance\nclosing_balance_worst = current_balance\nforecast_rows = []\nfor day_idx in range(1, 91):\n    forecast_date = start_date + timedelta(days=day_idx - 1)\n    growth_multiplier = (1 + adjusted_growth_rate) ** (day_idx / 30.0)\n    base_inflows = avg_cash_in * growth_multiplier\n    base_outflows = (avg_cash_out + daily_extra_payroll) * growth_multiplier\n    base_net = base_inflows - base_outflows\n    closing_balance_base += base_net\n    best_inflows = base_inflows * 1.2\n    best_outflows = (avg_cash_out + daily_extra_payroll) * growth_multiplier * 0.9\n    best_net = best_inflows - best_outflows\n    closing_balance_best += best_net\n    worst_inflows = base_inflows * 0.8\n    worst_outflows = (avg_cash_out + daily_extra_payroll) * growth_multiplier * 1.1\n    worst_net = worst_inflows - worst_outflows\n    closing_balance_worst += worst_net\n    row = {\n        'dataset': 'forecast_row',\n        'run_id': run_id,\n        'company_id': company_id,\n        'date': forecast_date.isoformat(),\n        'base_inflows': base_inflows,\n        'base_outflows': base_outflows,\n        'base_net_cash': base_net,\n        'base_closing_balance': closing_balance_base,\n        'best_inflows': best_inflows,\n        'best_outflows': best_outflows,\n        'best_net_cash': best_net,\n        'best_closing_balance': closing_balance_best,\n        'worst_inflows': worst_inflows,\n        'worst_outflows': worst_outflows,\n        'worst_net_cash': worst_net,\n        'worst_closing_balance': closing_balance_worst,\n        'metadata': {}\n    }\n    forecast_rows.append({'json': row})\nscenario_row = {\n    'dataset': 'scenario',\n    'id': scenario_id,\n    'company_id': company_id,\n    'name': scenario_name,\n    'parameters': {\n        'growth_adjustment': growth_adjustment,\n        'additional_monthly_payroll': additional_monthly_payroll\n    },\n    'is_default': False\n}\nrun_row = {\n    'dataset': 'forecast_run',\n    'id': run_id,\n    'company_id': company_id,\n    'scenario_id': scenario_id,\n    'parameters_id': parameters_id,\n    'run_label': scenario_name or 'scenario_run',\n    'run_at': run_at,\n    'assumptions': assumptions\n}\noutput = []\noutput.append({'json': scenario_row})\noutput.append({'json': run_row})\noutput.extend(forecast_rows)\nreturn output\n"
+      },
+      "id": "calc-scenario",
+      "name": "Compute Scenario Forecast",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        1100
+      ]
+    },
+    {
+      "parameters": {
+        "value": "={{ $json.dataset }}",
+        "rules": [
+          {
+            "operation": "equal",
+            "value1": "scenario"
+          },
+          {
+            "operation": "equal",
+            "value1": "forecast_run"
+          },
+          {
+            "operation": "equal",
+            "value1": "forecast_row"
+          }
+        ]
+      },
+      "id": "switch-scenario",
+      "name": "Switch Scenario Data",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [
+        300,
+        1250
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "create",
+        "tableId": "scenarios",
+        "useCustomSchema": false,
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "id",
+              "fieldValue": "={{ $json.id }}"
+            },
+            {
+              "fieldId": "company_id",
+              "fieldValue": "={{ $json.company_id }}"
+            },
+            {
+              "fieldId": "name",
+              "fieldValue": "={{ $json.name }}"
+            },
+            {
+              "fieldId": "parameters",
+              "fieldValue": "={{ $json.parameters }}"
+            },
+            {
+              "fieldId": "is_default",
+              "fieldValue": "={{ $json.is_default }}"
+            }
+          ]
+        }
+      },
+      "id": "insert-scenario",
+      "name": "Insert Scenario",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        100,
+        1400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "create",
+        "tableId": "forecast_runs",
+        "useCustomSchema": false,
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "id",
+              "fieldValue": "={{ $json.id }}"
+            },
+            {
+              "fieldId": "company_id",
+              "fieldValue": "={{ $json.company_id }}"
+            },
+            {
+              "fieldId": "scenario_id",
+              "fieldValue": "={{ $json.scenario_id }}"
+            },
+            {
+              "fieldId": "parameters_id",
+              "fieldValue": "={{ $json.parameters_id }}"
+            },
+            {
+              "fieldId": "run_label",
+              "fieldValue": "={{ $json.run_label }}"
+            },
+            {
+              "fieldId": "run_at",
+              "fieldValue": "={{ $json.run_at }}"
+            },
+            {
+              "fieldId": "assumptions",
+              "fieldValue": "={{ $json.assumptions }}"
+            }
+          ]
+        }
+      },
+      "id": "insert-run-scenario",
+      "name": "Insert Forecast Run (Scenario)",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        300,
+        1400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "create",
+        "tableId": "daily_forecasts",
+        "useCustomSchema": false,
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "run_id",
+              "fieldValue": "={{ $json.run_id }}"
+            },
+            {
+              "fieldId": "company_id",
+              "fieldValue": "={{ $json.company_id }}"
+            },
+            {
+              "fieldId": "date",
+              "fieldValue": "={{ $json.date }}"
+            },
+            {
+              "fieldId": "base_inflows",
+              "fieldValue": "={{ $json.base_inflows }}"
+            },
+            {
+              "fieldId": "base_outflows",
+              "fieldValue": "={{ $json.base_outflows }}"
+            },
+            {
+              "fieldId": "base_net_cash",
+              "fieldValue": "={{ $json.base_net_cash }}"
+            },
+            {
+              "fieldId": "base_closing_balance",
+              "fieldValue": "={{ $json.base_closing_balance }}"
+            },
+            {
+              "fieldId": "best_inflows",
+              "fieldValue": "={{ $json.best_inflows }}"
+            },
+            {
+              "fieldId": "best_outflows",
+              "fieldValue": "={{ $json.best_outflows }}"
+            },
+            {
+              "fieldId": "best_net_cash",
+              "fieldValue": "={{ $json.best_net_cash }}"
+            },
+            {
+              "fieldId": "best_closing_balance",
+              "fieldValue": "={{ $json.best_closing_balance }}"
+            },
+            {
+              "fieldId": "worst_inflows",
+              "fieldValue": "={{ $json.worst_inflows }}"
+            },
+            {
+              "fieldId": "worst_outflows",
+              "fieldValue": "={{ $json.worst_outflows }}"
+            },
+            {
+              "fieldId": "worst_net_cash",
+              "fieldValue": "={{ $json.worst_net_cash }}"
+            },
+            {
+              "fieldId": "worst_closing_balance",
+              "fieldValue": "={{ $json.worst_closing_balance }}"
+            },
+            {
+              "fieldId": "metadata",
+              "fieldValue": "={{ $json.metadata }}"
+            }
+          ]
+        }
+      },
+      "id": "insert-daily-scenario",
+      "name": "Insert Daily Forecasts (Scenario)",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        500,
+        1400
+      ]
+    }
+  ],
+  "connections": {
+    "Scenario Webhook": {
+      "main": [
+        [
+          {
+            "node": "Set Scenario Params",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Scenario Params": {
+      "main": [
+        [
+          {
+            "node": "Merge Scenario & Daily",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Daily Actuals": {
+      "main": [
+        [
+          {
+            "node": "Label Daily Actuals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Label Daily Actuals": {
+      "main": [
+        [
+          {
+            "node": "Merge Scenario & Daily",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Get Parameters": {
+      "main": [
+        [
+          {
+            "node": "Label Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Label Parameters": {
+      "main": [
+        [
+          {
+            "node": "Merge All Data",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Scenario & Daily": {
+      "main": [
+        [
+          {
+            "node": "Merge All Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge All Data": {
+      "main": [
+        [
+          {
+            "node": "Compute Scenario Forecast",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Scenario Forecast": {
+      "main": [
+        [
+          {
+            "node": "Switch Scenario Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Scenario Data": {
+      "main": [
+        [
+          {
+            "node": "Insert Scenario",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Insert Forecast Run (Scenario)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Insert Daily Forecasts (Scenario)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "pinData": {}
+}
 
