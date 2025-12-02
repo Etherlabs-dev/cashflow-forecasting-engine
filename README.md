@@ -195,5 +195,4 @@ This project is a **repeatable blueprint** for a cash-flow intelligence system:
    ├─ diagrams/
    │  ├─ architecture.png
    │  ├─ data-flow.png
-   │  └─ dashboard-screenshot.png
-   └─ logos/
+   │  └─ screenshots
