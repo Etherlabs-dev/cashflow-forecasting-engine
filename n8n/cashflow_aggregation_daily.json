@@ -1,0 +1,370 @@
+{
+  "name": "Cash Flow - Parameter Calculator",
+  "nodes": [
+    {
+      "parameters": {
+        "mode": "everyDay",
+        "hour": 2,
+        "minute": 0
+      },
+      "id": "cron-trigger",
+      "name": "Daily Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        200,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "getAll",
+        "tableId": "daily_actuals",
+        "useCustomSchema": false,
+        "returnAll": true,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "company_id",
+              "keyValue": "=11111111-1111-1111-1111-111111111111"
+            }
+          ]
+        }
+      },
+      "id": "get-daily-actuals",
+      "name": "Get Daily Actuals",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        200,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "dataset",
+              "value": "daily_actuals"
+            }
+          ]
+        },
+        "keepOnlySet": false
+      },
+      "id": "label-daily",
+      "name": "Label Daily Actuals",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        200,
+        550
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "getAll",
+        "tableId": "invoices_ar",
+        "useCustomSchema": false,
+        "returnAll": true,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "company_id",
+              "keyValue": "=11111111-1111-1111-1111-111111111111"
+            }
+          ]
+        }
+      },
+      "id": "get-invoices",
+      "name": "Get Invoices AR",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        400,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "dataset",
+              "value": "invoices_ar"
+            }
+          ]
+        },
+        "keepOnlySet": false
+      },
+      "id": "label-invoices",
+      "name": "Label Invoices",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        400,
+        550
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "getAll",
+        "tableId": "bills_ap",
+        "useCustomSchema": false,
+        "returnAll": true,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "company_id",
+              "keyValue": "=11111111-1111-1111-1111-111111111111"
+            }
+          ]
+        }
+      },
+      "id": "get-bills",
+      "name": "Get Bills AP",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        600,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "dataset",
+              "value": "bills_ap"
+            }
+          ]
+        },
+        "keepOnlySet": false
+      },
+      "id": "label-bills",
+      "name": "Label Bills",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        600,
+        550
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "merge-daily-invoices",
+      "name": "Merge Daily & Invoices",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [
+        300,
+        750
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "merge-all",
+      "name": "Merge All Datasets",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [
+        400,
+        950
+      ]
+    },
+    {
+      "parameters": {
+        "language": "python",
+        "pythonCode": "from datetime import datetime\nfrom collections import defaultdict\n\nitems = _input.all()\n\ndaily_actuals = []\ninvoices = []\nbills = []\ncompany_id = None\n\nfor item in items:\n    data = item['json']\n    dataset = data.get('dataset')\n    if dataset == 'daily_actuals':\n        daily_actuals.append(data)\n        company_id = data.get('company_id') or company_id\n    elif dataset == 'invoices_ar':\n        invoices.append(data)\n        if not company_id:\n            company_id = data.get('company_id')\n    elif dataset == 'bills_ap':\n        bills.append(data)\n        if not company_id:\n            company_id = data.get('company_id')\n\nmonthly_inflows = defaultdict(float)\nmonthly_outflows = defaultdict(float)\nmonthly_net = defaultdict(float)\n\nfor row in daily_actuals:\n    date_str = row.get('date') or row.get('transaction_date')\n    if not date_str:\n        continue\n    try:\n        dt = datetime.fromisoformat(str(date_str))\n    except:\n        dt = datetime.strptime(str(date_str), '%Y-%m-%d')\n    month_key = dt.strftime('%Y-%m')\n    monthly_inflows[month_key] += float(row.get('cash_in', 0) or 0)\n    monthly_outflows[month_key] += float(row.get('cash_out', 0) or 0)\n    monthly_net[month_key] += float(row.get('net_cash', 0) or 0)\n\nmonths_sorted = sorted(monthly_inflows.keys())\ngrowth_rates = []\nfor i in range(1, len(months_sorted)):\n    prev_month = months_sorted[i-1]\n    curr_month = months_sorted[i]\n    prev_in = monthly_inflows[prev_month]\n    curr_in = monthly_inflows[curr_month]\n    if prev_in != 0:\n        growth_rates.append((curr_in - prev_in) / prev_in)\n\nbase_growth_rate = sum(growth_rates) / len(growth_rates) if growth_rates else 0\ntotal_inflow = sum(monthly_inflows.values())\navg_inflow = total_inflow / len(monthly_inflows) if monthly_inflows else 0\nseasonality_factors = {}\nfor month, inflow in monthly_inflows.items():\n    seasonality_factors[month] = inflow / avg_inflow if avg_inflow else 0\n\nar_buckets = {'0-15': 0, '16-30': 0, '31-60': 0, '61-90': 0, '90+': 0}\nfor inv in invoices:\n    issue_date = inv.get('issue_date')\n    paid_date = inv.get('paid_date')\n    if issue_date and paid_date:\n        try:\n            start = datetime.fromisoformat(str(issue_date))\n        except:\n            start = datetime.strptime(str(issue_date), '%Y-%m-%d')\n        try:\n            end = datetime.fromisoformat(str(paid_date))\n        except:\n            end = datetime.strptime(str(paid_date), '%Y-%m-%d')\n        delta = (end - start).days\n        if delta <= 15:\n            ar_buckets['0-15'] += 1\n        elif delta <= 30:\n            ar_buckets['16-30'] += 1\n        elif delta <= 60:\n            ar_buckets['31-60'] += 1\n        elif delta <= 90:\n            ar_buckets['61-90'] += 1\n        else:\n            ar_buckets['90+'] += 1\nar_total = sum(ar_buckets.values())\nar_distribution = {k: (v / ar_total if ar_total else 0) for k, v in ar_buckets.items()}\n\nap_buckets = {'0-15': 0, '16-30': 0, '31-60': 0, '61-90': 0, '90+': 0}\nfor bill in bills:\n    issue_date = bill.get('issue_date')\n    paid_date = bill.get('paid_date')\n    if issue_date and paid_date:\n        try:\n            start = datetime.fromisoformat(str(issue_date))\n        except:\n            start = datetime.strptime(str(issue_date), '%Y-%m-%d')\n        try:\n            end = datetime.fromisoformat(str(paid_date))\n        except:\n            end = datetime.strptime(str(paid_date), '%Y-%m-%d')\n        delta = (end - start).days\n        if delta <= 15:\n            ap_buckets['0-15'] += 1\n        elif delta <= 30:\n            ap_buckets['16-30'] += 1\n        elif delta <= 60:\n            ap_buckets['31-60'] += 1\n        elif delta <= 90:\n            ap_buckets['61-90'] += 1\n        else:\n            ap_buckets['90+'] += 1\nap_total = sum(ap_buckets.values())\nap_distribution = {k: (v / ap_total if ap_total else 0) for k, v in ap_buckets.items()}\n\nmonthly_net_values = list(monthly_net.values())\navg_monthly_net = sum(monthly_net_values) / len(monthly_net_values) if monthly_net_values else 0\nburn_rate = -avg_monthly_net if avg_monthly_net < 0 else avg_monthly_net\n\nburn_rate_metrics = {\n    'average_monthly_net': avg_monthly_net,\n    'average_monthly_burn': burn_rate\n}\n\nresult = {\n    'company_id': company_id,\n    'base_growth_rate': base_growth_rate,\n    'ar_distribution': ar_distribution,\n    'ap_distribution': ap_distribution,\n    'seasonality_factors': seasonality_factors,\n    'burn_rate_metrics': burn_rate_metrics,\n    'extra_metrics': {}\n}\n\nreturn [{'json': result}]\n"
+      },
+      "id": "calc-params",
+      "name": "Calculate Cashflow Parameters",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        1150
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "create",
+        "tableId": "cashflow_parameters",
+        "useCustomSchema": false,
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "company_id",
+              "fieldValue": "={{ $json.company_id }}"
+            },
+            {
+              "fieldId": "base_growth_rate",
+              "fieldValue": "={{ $json.base_growth_rate }}"
+            },
+            {
+              "fieldId": "ar_distribution",
+              "fieldValue": "={{ $json.ar_distribution }}"
+            },
+            {
+              "fieldId": "ap_distribution",
+              "fieldValue": "={{ $json.ap_distribution }}"
+            },
+            {
+              "fieldId": "seasonality_factors",
+              "fieldValue": "={{ $json.seasonality_factors }}"
+            },
+            {
+              "fieldId": "burn_rate_metrics",
+              "fieldValue": "={{ $json.burn_rate_metrics }}"
+            },
+            {
+              "fieldId": "extra_metrics",
+              "fieldValue": "={{ $json.extra_metrics }}"
+            }
+          ]
+        }
+      },
+      "id": "insert-params",
+      "name": "Insert Cashflow Parameters",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        400,
+        1350
+      ]
+    }
+  ],
+  "connections": {
+    "Daily Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Daily Actuals",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Invoices AR",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Bills AP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Daily Actuals": {
+      "main": [
+        [
+          {
+            "node": "Label Daily Actuals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Label Daily Actuals": {
+      "main": [
+        [
+          {
+            "node": "Merge Daily & Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Invoices AR": {
+      "main": [
+        [
+          {
+            "node": "Label Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Label Invoices": {
+      "main": [
+        [
+          {
+            "node": "Merge Daily & Invoices",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Get Bills AP": {
+      "main": [
+        [
+          {
+            "node": "Label Bills",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Label Bills": {
+      "main": [
+        [
+          {
+            "node": "Merge All Datasets",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Daily & Invoices": {
+      "main": [
+        [
+          {
+            "node": "Merge All Datasets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge All Datasets": {
+      "main": [
+        [
+          {
+            "node": "Calculate Cashflow Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Cashflow Parameters": {
+      "main": [
+        [
+          {
+            "node": "Insert Cashflow Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "pinData": {}
+}
