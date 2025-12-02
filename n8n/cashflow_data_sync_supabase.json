@@ -1,1 +1,183 @@
-
+{
+  "name": "Cash Flow - Daily Historical Sync (Supabase)",
+  "nodes": [
+    {
+      "parameters": {
+        "mode": "everyDay",
+        "hour": 1,
+        "minute": 0
+      },
+      "id": "cron-trigger",
+      "name": "Daily Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "getAll",
+        "tableId": "bank_transactions",
+        "useCustomSchema": false,
+        "returnAll": true,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "company_id",
+              "keyValue": "=11111111-1111-1111-1111-111111111111"
+            }
+          ]
+        }
+      },
+      "id": "get-transactions",
+      "name": "Get Bank Transactions",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "python",
+        "pythonCode": "from collections import defaultdict\n\n# Get all input rows\nrows = [item['json'] for item in _input.all()]\n\n# Group transaction amounts by date\naggregated = defaultdict(lambda: {'cash_in': 0.0, 'cash_out': 0.0, 'net_cash': 0.0})\nfor row in rows:\n    date_str = row.get('transaction_date')  # e.g. '2025-01-01'\n    amount = float(row.get('amount', 0) or 0)\n    if amount >= 0:\n        aggregated[date_str]['cash_in'] += amount\n    else:\n        aggregated[date_str]['cash_out'] += -amount\n    aggregated[date_str]['net_cash'] += amount\n\n# Sort the dates\nsorted_dates = sorted(aggregated.keys())\n\n# Compute opening and closing balances cumulatively\nbalance = 0.0\ncompany_id = rows[0]['company_id'] if rows else None\nresults = []\nfor date_str in sorted_dates:\n    stats = aggregated[date_str]\n    opening_balance = balance\n    closing_balance = opening_balance + stats['net_cash']\n    results.append({\n        'company_id': company_id,\n        'date': date_str,\n        'opening_balance': opening_balance,\n        'cash_in': stats['cash_in'],\n        'cash_out': stats['cash_out'],\n        'net_cash': stats['net_cash'],\n        'closing_balance': closing_balance,\n        'metadata': {}\n    })\n    balance = closing_balance\n\n# Return one item per aggregated day\nreturn [{'json': r} for r in results]\n"
+      },
+      "id": "aggregate-flows",
+      "name": "Aggregate Daily Flows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "delete",
+        "tableId": "daily_actuals",
+        "useCustomSchema": false,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "company_id",
+              "keyValue": "=11111111-1111-1111-1111-111111111111"
+            }
+          ]
+        }
+      },
+      "id": "delete-daily-actuals",
+      "name": "Delete Existing Daily Actuals",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        860,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "create",
+        "tableId": "daily_actuals",
+        "useCustomSchema": false,
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "company_id",
+              "fieldValue": "={{ $json.company_id }}"
+            },
+            {
+              "fieldId": "date",
+              "fieldValue": "={{ $json.date }}"
+            },
+            {
+              "fieldId": "opening_balance",
+              "fieldValue": "={{ $json.opening_balance }}"
+            },
+            {
+              "fieldId": "cash_in",
+              "fieldValue": "={{ $json.cash_in }}"
+            },
+            {
+              "fieldId": "cash_out",
+              "fieldValue": "={{ $json.cash_out }}"
+            },
+            {
+              "fieldId": "net_cash",
+              "fieldValue": "={{ $json.net_cash }}"
+            },
+            {
+              "fieldId": "closing_balance",
+              "fieldValue": "={{ $json.closing_balance }}"
+            },
+            {
+              "fieldId": "metadata",
+              "fieldValue": "{{ {} }}"
+            }
+          ]
+        }
+      },
+      "id": "insert-daily-actuals",
+      "name": "Insert Daily Actuals",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1080,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Daily Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Bank Transactions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Bank Transactions": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Daily Flows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Daily Flows": {
+      "main": [
+        [
+          {
+            "node": "Delete Existing Daily Actuals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Existing Daily Actuals": {
+      "main": [
+        [
+          {
+            "node": "Insert Daily Actuals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "pinData": {}
+}
