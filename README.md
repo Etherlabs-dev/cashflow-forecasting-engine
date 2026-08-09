@@ -1,246 +1,102 @@
 # 90-Day Cash Flow Intelligence Engine
 
-> Reference implementation for unifying finance data, producing 90-day cash forecasts, running what-if scenarios, surfacing runway risk, and presenting the results in an operational dashboard.
+> Tested reference implementation for deterministic cash forecasting, isolated what-if scenarios, runway alerts and frozen forecast backtesting.
 
-**Status:** Reference Implementation / Portfolio System  
-**Domain:** Finance Operations · Cash Visibility · Forecasting · Decision Support  
-**Stack:** n8n · PostgreSQL/Supabase · React/TypeScript
+**Status:** Tested reference implementation / portfolio system
+**Evidence:** No client deployment, production SLA, business outcome or real-world forecast-accuracy claim is made.
 
-This repository demonstrates the architecture of a cash-flow decision system: ingest financial events, normalize them into a common model, compute forward-looking cash projections, run scenarios, trigger risk alerts, and expose the result to operators.
+## What is implemented
 
-It is **not presented as a client deployment or as proof of forecast accuracy in a live company**. Any accuracy, runway or business-impact claim should be tied to a named dataset and reproducible backtest.
+- A Python 3.11 forecast service with Decimal-based calculations, explicit as-of dates, freshness checks, duplicate detection, recurring events, frozen FX rates and immutable assumption/scenario snapshots.
+- Reproducible run IDs and SHA-256 assumption fingerprints.
+- Base, best, worst and isolated scenario projections.
+- Alert lifecycle logic that suppresses duplicate active alerts.
+- Frozen-forecast backtesting and a deterministic **synthetic** fixture/report.
+- PostgreSQL schema for persisted forecasts, provenance, backtests and idempotent result persistence.
+- Six importable n8n workflow artifacts. Forecast and scenario workflows delegate calculation to the Python service; n8n remains the orchestration boundary.
+- A flattened React/Vite dashboard with typed builds and explicit synthetic/configured evidence labels.
 
----
-
-## Problem
-
-Cash forecasting breaks down when the underlying inputs live across separate systems:
-
-- bank activity;
-- accounts receivable;
-- accounts payable;
-- payroll;
-- operating expenses;
-- payment processors;
-- accounting tools.
-
-A useful system needs more than a spreadsheet projection. It needs a canonical data layer, explicit forecast assumptions, scenario versioning, reproducible calculations and alerting that explains *why* cash risk changed.
-
----
-
-## System flow
+## Architecture
 
 ```text
-Bank / AR / AP / Payroll / Payments
-              ↓
-         data ingestion
-              ↓
-       normalization layer
-              ↓
-      daily cash snapshots
-              ↓
-       forecasting engine
-          ↙         ↘
-   base forecast   scenarios
-          \         /
-           risk rules
-              ↓
-       alerts + dashboard
+providers / files -> n8n adapters -> canonical cash events
+                                          |
+                                          v
+                         deterministic Python service
+                         (assumptions + scenario + as-of)
+                                          |
+                                          v
+                    PostgreSQL immutable runs and forecasts
+                              |                    |
+                              v                    v
+                    deduplicated alerts      React dashboard
+                              |
+                              v
+                    frozen-run backtesting
 ```
 
----
+The service fails closed when required history is missing, a source watermark is stale/future-dated, input values are invalid, duplicates conflict, or a currency lacks an explicit frozen FX rate. See [architecture](./docs/02-architecture.md), [evidence](./docs/09-evidence.md), and [reliability](./docs/10-reliability.md).
 
-## Capabilities represented in the repository
-
-### Unified cash-event model
-Financial inputs are normalized into a shared data layer so the forecast is not built directly from provider-specific payloads.
-
-### 90-day forecast
-The workflow computes forward-looking cash positions from historical/current cash events and configured assumptions.
-
-### Scenario modeling
-The design supports what-if adjustments such as:
-
-- revenue growth changes;
-- payroll increases;
-- expense reductions/increases;
-- timing changes in receivables/payables.
-
-### Runway/risk alerts
-Forecast outputs can trigger alerts when cash or runway crosses configured thresholds.
-
-### Dashboard
-A React/TypeScript dashboard exists under:
+## Repository layout
 
 ```text
-dashboard-react/CashFlow90-dashboard/
+src/cashflow_engine/   deterministic domain logic and HTTP service
+tests/                 unit, API, workflow-contract and synthetic-backtest tests
+scripts/               reproducible synthetic backtest command
+sql/                   PostgreSQL schema and persistence functions
+n8n/                   disabled-by-default orchestration exports
+dashboard-react/       React/Vite application (repository-rooted frontend)
+docs/                  architecture, setup, mapping and evidence notes
 ```
 
-The outer `dashboard-react/package.json` is currently a placeholder file; the real frontend project is nested one directory deeper. This should be cleaned up in the engineering pass.
+## Reproduce locally
 
----
-
-## Repository structure
-
-```text
-cashflow-forecasting-engine/
-├── sql/                         # schema + seed/sample data
-├── n8n/                         # ingestion, forecasting, scenario and alert workflows
-├── dashboard-react/
-│   └── CashFlow90-dashboard/    # actual React/Vite application
-├── docs/                        # architecture, setup, mappings, walkthroughs
-├── assets/
-├── README.md
-└── LICENSE
-```
-
----
-
-## Evidence standard
-
-| Claim | Evidence status |
-|---|---|
-| SQL/data-model artifacts exist | **Implemented** |
-| n8n workflow artifacts exist | **Implemented** |
-| React dashboard source exists | **Implemented** |
-| Scenario/risk workflow design exists | **Implemented** |
-| Sample/seed data | **Synthetic / Demonstration** |
-| Forecast accuracy on real company data | **Not established here** |
-| Production runway prediction | **Not claimed** |
-| Client time/revenue impact | **Not claimed** |
-
-See [`docs/09-evidence.md`](./docs/09-evidence.md).
-
----
-
-## Forecasting discipline
-
-A cash forecast is only useful if assumptions are explicit.
-
-A portfolio-grade version of this project should make the following visible for every run:
-
-- forecast as-of date;
-- opening cash balance;
-- data freshness by source;
-- recurring inflow/outflow assumptions;
-- AR collection assumptions;
-- AP payment assumptions;
-- payroll schedule;
-- scenario deltas;
-- confidence/uncertainty treatment;
-- actual-vs-forecast error when backtesting becomes available.
-
-The repository should avoid presenting one projected curve as certainty.
-
----
-
-## Quick start
-
-The project currently combines database, n8n and frontend artifacts. The exact end-to-end startup path still needs consolidation into a reproducible development environment.
-
-### Database
-
-Use the SQL assets under `sql/` to create the schema and load sample data for demonstration/testing.
-
-### Workflows
-
-Import the workflow JSON files under `n8n/` into n8n and configure credentials through the platform's credential manager.
-
-### Dashboard
-
-The actual frontend project is:
+Python 3.11:
 
 ```bash
-cd dashboard-react/CashFlow90-dashboard
-npm install
+python3.11 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/ruff check .
+.venv/bin/pytest
+PYTHONPATH=src .venv/bin/python scripts/run_synthetic_backtest.py
+```
+
+Dashboard (Node 22+):
+
+```bash
+cd dashboard-react
+npm ci
+npm run typecheck
+npm run build
 npm run dev
 ```
 
-The outer placeholder `dashboard-react/package.json` should not be used.
+Service:
 
----
-
-## Reliability requirements
-
-A production cash-intelligence system needs controls around stale inputs and misleading forecasts, not just application uptime.
-
-Key controls include:
-
-- source freshness monitoring;
-- idempotent ingestion;
-- duplicate-event handling;
-- clear missing-data behavior;
-- scenario versioning;
-- reproducible forecast runs;
-- audit trail for assumption changes;
-- alert deduplication;
-- protection against malformed/negative/unexpected values;
-- timezone and currency normalization;
-- actual-vs-forecast backtesting;
-- role-based access for finance data;
-- secrets management.
-
-See [`docs/10-reliability.md`](./docs/10-reliability.md).
-
----
-
-## Stronger target architecture
-
-n8n can remain valuable for source orchestration and notifications, but forecast calculation and scenario logic should be independently testable.
-
-A stronger portfolio architecture would look like:
-
-```text
-source adapters / n8n
-        ↓
-canonical cash-event tables
-        ↓
-forecast + scenario library/service  ← deterministic, tested code
-        ↓
-forecast results + assumptions
-        ↓
-alerts / dashboard
+```bash
+.venv/bin/uvicorn cashflow_engine.service:app --app-dir src
 ```
 
-The next engineering pass should extract the forecast/scenario rules into code with deterministic fixtures and backtests instead of leaving the business logic primarily embedded in workflow nodes.
+Database: execute `sql/schema.sql` against PostgreSQL 16. The n8n exports are intentionally inactive and require `FORECAST_ENGINE_URL`, `FORECAST_ENGINE_TOKEN`, platform-managed database credentials, and provider credentials before activation.
 
----
+## Evidence summary
 
-## Testing target
+| Item | Label | Meaning |
+|---|---|---|
+| Deterministic calculation suite | **Tested** | Executed locally under Python 3.11 |
+| Frontend type check/build | **Tested** | Executed using the locked npm dependency graph |
+| PostgreSQL schema | **Tested** | Executed against an isolated PostgreSQL 16 instance |
+| Backtest artifact | **Synthetic backtest** | Measures the engine on generated fixtures only |
+| Workflow provider integrations | **Implemented artifacts / not live-verified** | No connected provider execution is claimed |
+| Real-company forecast accuracy | **Not established** | Requires frozen production forecasts and later actuals |
+| Client savings or business impact | **Not claimed** | No client evidence exists in this repository |
 
-A production-style validation suite should cover:
+## Important limitations
 
-- ingestion idempotency;
-- missing-source data;
-- negative/invalid values;
-- recurring cash-event calculation;
-- forecast date boundaries;
-- scenario application;
-- scenario isolation/versioning;
-- runway threshold alerts;
-- zero/negative cash crossing;
-- duplicate alert suppression;
-- multi-currency policy or explicit rejection;
-- frontend build and typed data contracts.
+- Source adapters still contain provider-specific normalization in n8n; only the financial forecast/scenario rules have been extracted.
+- Notification transport and authenticated provider runs are not configured here.
+- The dashboard bundle can be further code-split.
+- Tenant authorization/RLS must be designed for the deployment identity model before production use.
+- Any previously exposed Supabase project key should be rotated even if it was an anonymous client key; the current tree contains no credential value.
 
-A backtest should compare historical forecasts against actual realized cash positions before any accuracy claim is made.
-
----
-
-## Current limitations
-
-- The frontend is nested under `dashboard-react/CashFlow90-dashboard/` and the outer package file is an empty placeholder.
-- Documentation contains multiple architecture documents that should be consolidated.
-- There is no clear repository-level automated test/CI contract yet.
-- Forecast assumptions need to be surfaced as first-class configuration and result metadata.
-- No verified production accuracy or client outcome is claimed by this repository.
-
----
-
-## License
-
-MIT. See [`LICENSE`](./LICENSE).
-
----
-
-Built by **Ugo Chukwu / Etherlabs** as a finance-operations and decision-systems reference implementation.
+MIT licensed. Built by **Ugo Chukwu / Etherlabs**.

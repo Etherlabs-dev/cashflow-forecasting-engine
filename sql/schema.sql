@@ -317,15 +317,30 @@ create table if not exists forecast_runs (
   company_id        uuid not null references companies(id) on delete cascade,
   scenario_id       uuid references scenarios(id) on delete set null,
   parameters_id     uuid references cashflow_parameters(id) on delete set null,
-  run_label         text,                  -- "daily_auto", "manual_hiring_5_engs"
+  run_label         text not null,         -- "daily_auto", "manual_hiring_5_engs"
   run_at            timestamptz not null default now(),
-  assumptions       jsonb,                 -- full snapshot of assumptions for traceability
+  as_of_date        date not null,         -- frozen knowledge boundary for this forecast
+  source_watermark  timestamptz not null,  -- freshest source record included in the run
+  assumptions       jsonb not null,        -- full immutable assumption snapshot
+  assumptions_fingerprint text not null check (assumptions_fingerprint ~ '^[0-9a-f]{64}$'),
+  scenario_snapshot jsonb not null default '{}'::jsonb,
+  model_version     text not null,
+  input_status      text not null default 'ready'
+                    check (input_status in ('ready', 'degraded', 'blocked')),
   created_by        text,                  -- 'system' or email/user id
   notes             text
 );
 
 create index if not exists idx_forecast_runs_company_run_at
   on forecast_runs (company_id, run_at desc);
+
+create unique index if not exists uq_forecast_run_identity
+  on forecast_runs (
+    company_id,
+    coalesce(scenario_id, '00000000-0000-0000-0000-000000000000'::uuid),
+    as_of_date,
+    assumptions_fingerprint
+  );
 
 
 -- ==========================================================
@@ -376,14 +391,130 @@ create table if not exists alert_events (
   company_id      uuid not null references companies(id) on delete cascade,
   forecast_run_id uuid references forecast_runs(id) on delete set null,
   alert_type      text not null,           -- 'runway_below_threshold', 'negative_balance', etc.
+  dedupe_key      text not null,
+  lifecycle_status text not null default 'active'
+                  check (lifecycle_status in ('active', 'resolved')),
   severity        alert_severity not null default 'warning',
   message         text not null,
   details         jsonb,                   -- includes computed runway, dates, etc.
-  created_at      timestamptz not null default now()
+  first_seen_at   timestamptz not null default now(),
+  last_seen_at    timestamptz not null default now(),
+  resolved_at     timestamptz,
+  created_at      timestamptz not null default now(),
+  check ((lifecycle_status = 'resolved') = (resolved_at is not null))
 );
 
 create index if not exists idx_alert_events_company_created
   on alert_events (company_id, created_at desc);
+
+create unique index if not exists uq_active_alert_dedupe
+  on alert_events (company_id, dedupe_key)
+  where lifecycle_status = 'active';
+
+-- Backtests compare a frozen forecast with later realized cash. A row is evidence
+-- of an executed comparison, not a claim of production forecast accuracy.
+create table if not exists forecast_backtests (
+  id                    uuid primary key default gen_random_uuid(),
+  forecast_run_id       uuid not null references forecast_runs(id) on delete cascade,
+  evaluated_through     date not null,
+  observation_count     integer not null check (observation_count > 0),
+  metrics               jsonb not null,
+  evidence_label        text not null check (evidence_label in ('synthetic_backtest', 'historical_backtest')),
+  realized_fingerprint  text not null check (realized_fingerprint ~ '^[0-9a-f]{64}$'),
+  created_at            timestamptz not null default now(),
+  unique (forecast_run_id, evaluated_through, realized_fingerprint)
+);
+
+-- Transactional boundary used by the n8n orchestration workflows. Replaying an
+-- identical service response is safe because the run identity and daily rows
+-- are upserted rather than duplicated.
+create or replace function persist_forecast_result(payload jsonb)
+returns uuid
+language plpgsql
+as $$
+declare
+  run_payload jsonb := payload->'run';
+  row_payload jsonb;
+  persisted_run_id uuid := (run_payload->>'id')::uuid;
+begin
+  insert into forecast_runs (
+    id, company_id, scenario_id, run_label, run_at, as_of_date,
+    source_watermark, assumptions, assumptions_fingerprint,
+    scenario_snapshot, model_version, input_status, created_by
+  ) values (
+    persisted_run_id,
+    (run_payload->>'company_id')::uuid,
+    nullif(run_payload->>'scenario_id', '')::uuid,
+    run_payload->>'run_label',
+    (run_payload->>'run_at')::timestamptz,
+    (run_payload->>'as_of_date')::date,
+    (run_payload->>'source_watermark')::timestamptz,
+    run_payload->'assumptions',
+    run_payload->>'assumptions_fingerprint',
+    coalesce(run_payload->'scenario_snapshot', '{}'::jsonb),
+    run_payload->>'model_version',
+    coalesce(run_payload->>'input_status', 'ready'),
+    'forecast-service'
+  ) on conflict (id) do nothing;
+
+  for row_payload in select value from jsonb_array_elements(payload->'daily_forecasts')
+  loop
+    insert into daily_forecasts (
+      run_id, company_id, date, base_inflows, base_outflows, base_net_cash,
+      base_closing_balance, best_inflows, best_outflows, best_net_cash,
+      best_closing_balance, worst_inflows, worst_outflows, worst_net_cash,
+      worst_closing_balance, metadata
+    ) values (
+      persisted_run_id, (row_payload->>'company_id')::uuid, (row_payload->>'date')::date,
+      (row_payload->>'base_inflows')::numeric, (row_payload->>'base_outflows')::numeric,
+      (row_payload->>'base_net_cash')::numeric, (row_payload->>'base_closing_balance')::numeric,
+      (row_payload->>'best_inflows')::numeric, (row_payload->>'best_outflows')::numeric,
+      (row_payload->>'best_net_cash')::numeric, (row_payload->>'best_closing_balance')::numeric,
+      (row_payload->>'worst_inflows')::numeric, (row_payload->>'worst_outflows')::numeric,
+      (row_payload->>'worst_net_cash')::numeric, (row_payload->>'worst_closing_balance')::numeric,
+      coalesce(row_payload->'metadata', '{}'::jsonb)
+    ) on conflict (run_id, date) do nothing;
+  end loop;
+  return persisted_run_id;
+end
+$$;
+
+-- Claims only previously unseen active threshold breaches. Repeated schedule
+-- runs therefore do not send the same notification again.
+create or replace function claim_cashflow_alerts()
+returns setof alert_events
+language sql
+as $$
+  with latest_runs as (
+    select distinct on (company_id) *
+    from forecast_runs
+    where input_status = 'ready'
+    order by company_id, as_of_date desc, run_at desc
+  ), breaches as (
+    select
+      r.company_id,
+      r.id as forecast_run_id,
+      'runway_below_threshold'::text as alert_type,
+      'runway:' || r.id::text || ':base' as dedupe_key,
+      min(f.date) as breach_date
+    from latest_runs r
+    join daily_forecasts f on f.run_id = r.id
+    where f.base_closing_balance <= coalesce((r.assumptions->>'runway_threshold')::numeric, 0)
+    group by r.company_id, r.id
+  ), inserted as (
+    insert into alert_events (
+      company_id, forecast_run_id, alert_type, dedupe_key, severity, message, details
+    )
+    select
+      company_id, forecast_run_id, alert_type, dedupe_key, 'warning',
+      'Base forecast crosses the configured runway threshold on ' || breach_date,
+      jsonb_build_object('breach_date', breach_date)
+    from breaches
+    on conflict (company_id, dedupe_key) where lifecycle_status = 'active' do nothing
+    returning *
+  )
+  select * from inserted;
+$$;
 
 -- ==========================================================
 -- END OF SCHEMA

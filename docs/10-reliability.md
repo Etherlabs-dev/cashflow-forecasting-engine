@@ -107,4 +107,4 @@ A stronger implementation should test:
 - frontend build/type checks;
 - historical backtest calculations.
 
-The forecast and scenario logic should be executable outside n8n so these behaviors can be tested directly.
+These deterministic behaviors are executable outside n8n and covered by the Python suite. Live source completeness, provider semantics, notification delivery, tenant authorization and production operations still require deployment-specific verification.

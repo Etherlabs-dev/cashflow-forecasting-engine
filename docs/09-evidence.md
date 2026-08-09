@@ -18,14 +18,23 @@ This repository is a public reference implementation for cash-flow intelligence 
 **Reference Implementation / Portfolio System**
 
 ### Implemented
-- database/schema assets;
+- deterministic Python forecast/scenario service and database/schema assets;
 - n8n workflow assets;
-- scenario and alerting design;
+- scenario and alert deduplication logic;
 - React/TypeScript dashboard source;
+- frozen-forecast backtesting;
 - setup and architecture documentation.
 
+### Tested
+- deterministic feature tests under Python 3.11;
+- malformed, missing, stale, duplicate, currency, recurrence and boundary behavior;
+- scenario isolation, runway and alert lifecycle behavior;
+- HTTP contract and n8n JSON contracts;
+- frontend TypeScript and production build;
+- PostgreSQL 16 schema execution.
+
 ### Synthetic / demonstration
-Sample seed data and scenario demonstrations are useful for validating behavior but do not establish forecast accuracy.
+The generated backtest artifact is labelled `synthetic_backtest`. It validates the comparison mechanism and does not establish accuracy on a real business.
 
 ### Not established by this repository alone
 - real-company forecast accuracy;
