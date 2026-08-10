@@ -1,0 +1,65 @@
+{
+  "evidence_label": "synthetic_backtest",
+  "generated_from": "deterministic fixtures; no production or client data",
+  "assumptions": {
+    "windows": 3,
+    "horizon_days": 7,
+    "opening_balance": "1000 USD",
+    "realized_deviations_usd": [
+      "5",
+      "-3",
+      "8",
+      "0",
+      "-4",
+      "2",
+      "6"
+    ]
+  },
+  "environment": {
+    "python": "3.11.15",
+    "model_version": "deterministic-v1"
+  },
+  "aggregate": {
+    "evaluated_points": 21,
+    "mean_window_mae": "4.00"
+  },
+  "windows": [
+    {
+      "forecast_run_id": "203c9160-e023-541e-b1ba-0ead5fc58ca5",
+      "forecast_as_of_date": "2025-01-31",
+      "assumptions_fingerprint": "3454f41839cca28a842e5d074feb1e8c63e89bb397e58149dcea6288cbed3ef2",
+      "evaluated_points": 7,
+      "expected_points": 7,
+      "coverage_ratio": "1.0000",
+      "mean_absolute_error": "4.00",
+      "weighted_absolute_percentage_error": "0.0039",
+      "mean_error": "-2.00",
+      "evidence_label": "synthetic_backtest"
+    },
+    {
+      "forecast_run_id": "e16e3864-4434-59a5-8a0a-c54226383438",
+      "forecast_as_of_date": "2025-02-28",
+      "assumptions_fingerprint": "f4a473e945d3f4345ef1f594eb7dc5eee788cefae78e7aeac8f85728044f2872",
+      "evaluated_points": 7,
+      "expected_points": 7,
+      "coverage_ratio": "1.0000",
+      "mean_absolute_error": "4.00",
+      "weighted_absolute_percentage_error": "0.0039",
+      "mean_error": "-2.00",
+      "evidence_label": "synthetic_backtest"
+    },
+    {
+      "forecast_run_id": "18fcedcd-d517-594b-8610-8c9ff1286842",
+      "forecast_as_of_date": "2025-03-31",
+      "assumptions_fingerprint": "7cb937352ecd03ba9e88daebe4c9613f5a40a6b27342ed0a652e8f9948ab64f9",
+      "evaluated_points": 7,
+      "expected_points": 7,
+      "coverage_ratio": "1.0000",
+      "mean_absolute_error": "4.00",
+      "weighted_absolute_percentage_error": "0.0039",
+      "mean_error": "-2.00",
+      "evidence_label": "synthetic_backtest"
+    }
+  ],
+  "claim_boundary": "Demonstrates backtest mechanics only; it does not establish forecast accuracy."
+}

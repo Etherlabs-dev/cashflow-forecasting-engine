@@ -1,4 +1,5 @@
 {
+  "active": false,
   "name": "Cash Flow - Data Sync External APIs",
   "nodes": [
     {
@@ -732,4 +733,3 @@
   "settings": {},
   "pinData": {}
 }
-
